@@ -1,0 +1,192 @@
+substitutions:
+  devicename: shelly-plug-s-dryer
+  channel_1: Relay
+
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Higher value gives lower watt readout
+  current_res: "0.000943"
+  # Lower value gives lower voltage readout
+  voltage_div: "2066"
+  # measure a relatively strong load and enter values measured by the device vs the values your reference measurement provided here
+  power_cal_meas: "1710.0"
+  power_cal_real: "1685.0"
+
+  max_power: "2000"
+  max_temp: "70.0"
+
+esphome:
+  name: ${devicename}
+
+esp8266:
+  board: esp8285
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: ${devicename}
+    password: ${password}
+    manual_ip:
+      static_ip: 192.168.100.2
+      gateway: 192.168.100.1
+      subnet: 255.255.255.0
+      dns1: 8.8.8.8
+      dns2: 8.8.4.4
+
+captive_portal:
+
+# Enable logging
+logger:
+  level: DEBUG
+
+# Enable Home Assistant API
+api:
+
+ota:
+  password: ${password}
+
+web_server:
+  port: 80
+
+time:
+  - platform: sntp
+    id: my_time
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO13
+      inverted: True
+    name: "${devicename}_button"
+    on_press:
+      - switch.toggle: relay
+
+status_led:
+  pin:
+    number: GPIO02
+    inverted: True
+
+output:
+  - platform: gpio
+    pin: GPIO00
+    inverted: true
+    id: led
+
+switch:
+  - platform: gpio
+    pin: GPIO15
+    id: relay
+    name: "${channel_1}"
+    on_turn_on:
+      - output.turn_on: led
+    on_turn_off:
+      - output.turn_off: led
+
+sensor:
+  - platform: wifi_signal
+    name: "${devicename} WiFi Signal"
+    update_interval: 300s
+
+  # NTC Temperature
+  - platform: ntc
+    sensor: temp_resistance_reading
+    name: ${devicename} temperature
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    icon: "mdi:thermometer"
+    calibration:
+      b_constant: 3350
+      reference_resistance: 10kOhm
+      reference_temperature: 298.15K
+    on_value_range:
+      - above: ${max_temp}
+        then:
+          - switch.turn_off: relay
+          - homeassistant.service:
+              service: persistent_notification.create
+              data:
+                title: Message from ${devicename}
+              data_template:
+                message: Switch turned off because temperature exceeded ${max_temp}°C
+  - platform: resistance
+    id: temp_resistance_reading
+    sensor: temp_analog_reading
+    configuration: DOWNSTREAM
+    resistor: 32kOhm
+  - platform: adc
+    id: temp_analog_reading
+    pin: A0
+
+  - platform: hlw8012
+    sel_pin:
+      number: GPIO12
+      inverted: True
+    cf_pin: GPIO05
+    cf1_pin: GPIO14
+    model: BL0937
+    initial_mode: CURRENT
+    change_mode_every: 4294967295
+    update_interval: 2s
+    id: hlw8012_sensor
+    power:
+      name: "HLW8012 power"
+      internal: true
+      on_value_range:
+      - below: 1
+        then:
+          - text_sensor.template.publish:
+              id: machine_state
+              state: "Off"
+      - above: 1
+        below: 11
+        then:
+          - text_sensor.template.publish:
+              id: machine_state
+              state: "Standby"
+      - above: 11
+        then:
+          - text_sensor.template.publish:
+              id: machine_state
+              state: "Running"
+  
+  - platform: template
+    name: "${devicename} Power Consumption"
+    unit_of_measurement: "W"
+    icon: "mdi:flash"
+    id: hlw8012_power
+    lambda: return id(hlw8012_power_internal).state;
+    update_interval: 2s
+
+  - platform: hlw8012
+    sel_pin:
+      number: GPIO12
+      inverted: True
+    cf_pin: GPIO05
+    cf1_pin: GPIO14
+    model: BL0937
+    initial_mode: CURRENT
+    change_mode_every: 4294967295
+    update_interval: 2s
+    power:
+      name: "HLW8012 Power Internal"
+      internal: true
+      id: hlw8012_power_internal
+
+text_sensor:
+  - platform: template
+    name: "Tumble Dryer" # Change this to "Washing Machine" for the washing machine configuration
+    update_interval: 10s
+    icon: "mdi:tumble-dryer" # Change this to "mdi:washing-machine" for the washing machine configuration
+    id: machine_state
+    lambda: |-
+      if (id(hlw8012_power).state < 1) {
+        return {"Off"};
+      } else if (id(hlw8012_power).state < 11) {
+        return {"Standby"};
+      } else {
+        return {"Running"};
+      }
